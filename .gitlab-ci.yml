@@ -152,6 +152,7 @@ pages:
     - sed -i "s|window.BUILD_ID|'$CI_COMMIT_SHORT_SHA'|g" public/index.html
     - sed -i "s|window.API_URL|'$RENDER_SERVICE_URL'|g" public/index.html
     - echo "✅ Frontend ready for GitLab Pages"
+    - echo "🌐 https://$CI_PROJECT_NAMESPACE.gitlab.io/$CI_PROJECT_NAME"
   artifacts:
     # 📌 MATERIAŁ: GitLab Pages wymaga tej konkretnej struktury artifacts
     paths:
