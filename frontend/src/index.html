@@ -4,6 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Reference App — CI/CD Comparison</title>
+  <script id="runtime-config">
+    window.API_URL = "http://localhost:3000";
+    window.PIPELINE_PLATFORM = "local";
+    window.DEPLOY_TIME = new Date().toISOString();
+    window.BUILD_ID = "dev";
+  </script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
@@ -66,12 +72,12 @@
   </main>
 
   <script>
-    const API = window.API_URL || 'http://localhost:3000';
+    const API = window.API_URL;
 
     const PIPELINE_META = {
-      platform: window.PIPELINE_PLATFORM || 'local',
-      deployTime: window.DEPLOY_TIME || new Date().toISOString(),
-      buildId: window.BUILD_ID || 'dev',
+      platform: window.PIPELINE_PLATFORM,
+      deployTime: window.DEPLOY_TIME,
+      buildId: window.BUILD_ID,
     };
 
     document.getElementById('pipeline-platform').textContent = PIPELINE_META.platform;

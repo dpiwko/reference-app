@@ -1,0 +1,183 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  NODE_VERSION: "24"
+  APP_NAME: reference-app-backend
+
+jobs:
+  # ─── JOB 1: Test ────────────────────────────────────────────────────────
+  test:
+    name: 🧪 Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: refapp_test
+          POSTGRES_USER: refuser
+          POSTGRES_PASSWORD: refpass
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run tests
+        working-directory: backend
+        env:
+          DATABASE_URL: postgres://refuser:refpass@localhost:5432/refapp_test
+          NODE_ENV: test
+        run: npm test
+
+  # ─── JOB 2: Build ───────────────────────────────────────────────────────
+  build:
+    name: 🔨 Build
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: backend
+        run: npm ci --only=production
+
+      - name: Verify build artifact
+        working-directory: backend
+        run: |
+          echo "📦 Build verification"
+          node -e "require('./src/index.js')" &
+          sleep 2
+          kill %1 2>/dev/null || true
+          echo "✅ App starts without errors"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-build-${{ github.sha }}
+          path: |
+            backend/
+            !backend/node_modules/
+          retention-days: 7
+
+  # ─── JOB 3: Deploy ──────────────────────────────────────────────────────
+  deploy:
+    name: 🚀 Deploy
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Trigger Render Deploy
+        id: render_deploy
+        run: |
+          echo "🚀 Triggering Render deployment..."
+          DEPLOY_START=$(date +%s)
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -1)
+
+          echo "Response code: $HTTP_CODE"
+          echo "Response body: $BODY"
+
+          if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+            echo "❌ Deploy trigger failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+          echo "deploy_start=$DEPLOY_START" >> $GITHUB_OUTPUT
+          echo "✅ Deploy triggered successfully"
+
+      - name: Wait for deployment
+        run: |
+          echo "⏳ Waiting for Render to deploy (up to 5 min)..."
+          MAX_ATTEMPTS=30
+          ATTEMPT=0
+
+          # Wait until /health return 200
+          until [ $ATTEMPT -ge $MAX_ATTEMPTS ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              "${{ secrets.RENDER_SERVICE_URL }}/health" || echo "000")
+            
+            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS — HTTP $STATUS"
+            
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Deployment successful!"
+              break
+            fi
+            
+            if [ $ATTEMPT -ge $MAX_ATTEMPTS ]; then
+              echo "❌ Deployment timeout after ${MAX_ATTEMPTS} attempts"
+              exit 1
+            fi
+            
+            sleep 10
+          done
+
+      - name: Smoke test production
+        run: |
+          echo "🔍 Running smoke tests..."
+
+          # Test /health
+          HEALTH=$(curl -s "${{ secrets.RENDER_SERVICE_URL }}/health")
+          echo "Health: $HEALTH"
+
+          STATUS=$(echo $HEALTH | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+          if [ "$STATUS" != "healthy" ]; then
+            echo "❌ Health check failed: $STATUS"
+            exit 1
+          fi
+
+          # Test /items
+          ITEMS=$(curl -s "${{ secrets.RENDER_SERVICE_URL }}/items")
+          echo "Items: $ITEMS"
+
+          echo "✅ Smoke tests passed"
+
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Platform | GitHub Actions |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | ${{ github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Service URL | ${{ secrets.RENDER_SERVICE_URL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Time | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY

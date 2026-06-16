@@ -1,0 +1,44 @@
+name: Frontend — GitHub Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy-frontend:
+    name: 📄 Deploy to GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Inject pipeline metadata
+        run: |
+          sed -i "s|window.API_URL = .*|window.API_URL = '${{ secrets.RENDER_SERVICE_URL }}';|g" frontend/src/index.html
+          sed -i "s|window.PIPELINE_PLATFORM = .*|window.PIPELINE_PLATFORM = 'GitHub Actions';|g" frontend/src/index.html
+          sed -i "s|window.DEPLOY_TIME = .*|window.DEPLOY_TIME = '$(date -u +%Y-%m-%dT%H:%M:%SZ)';|g" frontend/src/index.html
+          sed -i "s|window.BUILD_ID = .*|window.BUILD_ID = '${{ github.sha }}';|g" frontend/src/index.html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/src/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
