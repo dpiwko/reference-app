@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reference App — CI/CD Comparison</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+    header { background: #1e293b; padding: 1rem 2rem; border-bottom: 1px solid #334155;
+             display: flex; align-items: center; justify-content: space-between; }
+    h1 { font-size: 1.25rem; font-weight: 600; }
+    .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; background: #334155; }
+    .badge.healthy { background: #14532d; color: #86efac; }
+    .badge.degraded { background: #7f1d1d; color: #fca5a5; }
+    main { max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+            padding: 1.25rem; margin-bottom: 1rem; }
+    .card h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;
+               color: #94a3b8; margin-bottom: 0.75rem; }
+    .health-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
+    .health-item { background: #0f172a; border-radius: 4px; padding: 0.5rem 0.75rem; }
+    .health-item label { font-size: 0.7rem; color: #64748b; display: block; }
+    .health-item value { font-size: 0.9rem; font-weight: 500; }
+    .items-list { list-style: none; }
+    .items-list li { padding: 0.6rem 0; border-bottom: 1px solid #334155;
+                     display: flex; justify-content: space-between; align-items: center; }
+    .items-list li:last-child { border-bottom: none; }
+    .add-form { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+    input { flex: 1; background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
+            border-radius: 4px; padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+    button { background: #3b82f6; color: white; border: none; border-radius: 4px;
+             padding: 0.5rem 1rem; cursor: pointer; font-size: 0.875rem; }
+    button:hover { background: #2563eb; }
+    .pipeline-info { font-size: 0.75rem; color: #64748b; text-align: center; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>📦 Reference App</h1>
+    <span id="health-badge" class="badge">checking...</span>
+  </header>
+  <main>
+    <div class="card" id="health-card">
+      <h2>⚙️ System Health</h2>
+      <div class="health-grid" id="health-grid">
+        <div class="health-item"><label>Status</label><value id="h-status">—</value></div>
+        <div class="health-item"><label>Version</label><value id="h-version">—</value></div>
+        <div class="health-item"><label>Environment</label><value id="h-env">—</value></div>
+        <div class="health-item"><label>Uptime (s)</label><value id="h-uptime">—</value></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>📋 Items (GET /items)</h2>
+      <ul class="items-list" id="items-list"><li>Loading...</li></ul>
+      <div class="add-form">
+        <input id="new-item-name" placeholder="Item name" />
+        <button onclick="addItem()">+ Add</button>
+      </div>
+    </div>
+    <p class="pipeline-info">
+      Pipeline: <strong id="pipeline-platform">—</strong> |
+      Deploy time: <strong id="deploy-time">—</strong> |
+      Build: <strong id="build-id">—</strong>
+    </p>
+  </main>
+
+  <script>
+    const API = window.API_URL || 'http://localhost:3000';
+
+    const PIPELINE_META = {
+      platform: window.PIPELINE_PLATFORM || 'local',
+      deployTime: window.DEPLOY_TIME || new Date().toISOString(),
+      buildId: window.BUILD_ID || 'dev',
+    };
+
+    document.getElementById('pipeline-platform').textContent = PIPELINE_META.platform;
+    document.getElementById('deploy-time').textContent = PIPELINE_META.deployTime;
+    document.getElementById('build-id').textContent = PIPELINE_META.buildId;
+
+    async function fetchHealth() {
+      try {
+        const res = await fetch(`${API}/health`);
+        const data = await res.json();
+        const badge = document.getElementById('health-badge');
+        badge.textContent = data.status;
+        badge.className = `badge ${data.status === 'healthy' ? 'healthy' : 'degraded'}`;
+        document.getElementById('h-status').textContent = data.status;
+        document.getElementById('h-version').textContent = data.version;
+        document.getElementById('h-env').textContent = data.environment;
+        document.getElementById('h-uptime').textContent = Math.round(data.checks.uptime);
+      } catch (e) {
+        document.getElementById('health-badge').textContent = 'unreachable';
+        document.getElementById('health-badge').className = 'badge degraded';
+      }
+    }
+
+    async function fetchItems() {
+      try {
+        const res = await fetch(`${API}/items`);
+        const data = await res.json();
+        const list = document.getElementById('items-list');
+        list.innerHTML = data.items.map(item =>
+          `<li><span>${item.name}</span><small style="color:#64748b">${item.description}</small></li>`
+        ).join('');
+      } catch (e) {
+        document.getElementById('items-list').innerHTML = '<li style="color:#f87171">Cannot reach API</li>';
+      }
+    }
+
+    async function addItem() {
+      const name = document.getElementById('new-item-name').value.trim();
+      if (!name) return;
+      await fetch(`${API}/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description: `Added via ${PIPELINE_META.platform}` }),
+      });
+      document.getElementById('new-item-name').value = '';
+      fetchItems();
+    }
+
+    fetchHealth();
+    fetchItems();
+    setInterval(fetchHealth, 30000); // every 30 seconds, make noise for Grafana
+  </script>
+</body>
+</html>
