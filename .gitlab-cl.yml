@@ -1,0 +1,161 @@
+# 📌 MATERIAŁ: policz linie — jeden plik vs dwa pliki w GitHub Actions
+# wc -l .gitlab-ci.yml
+
+image: node:20-alpine
+
+stages:
+  - test
+  - build
+  - deploy
+  - pages
+
+variables:
+  NODE_ENV: production
+  APP_NAME: reference-app-backend
+  # GitLab cache scope — inaczej niż GitHub Actions
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+
+# ─── Cache — współdzielony między jobami ──────────────────────────────────
+# 📌 MATERIAŁ: GitLab cache działa inaczej niż GitHub Actions cache
+# GitHub: cache-dependency-path per job
+# GitLab: jeden blok cache współdzielony przez stages
+cache:
+  key:
+    files:
+      - backend/package-lock.json
+  paths:
+    - .npm/
+  policy: pull-push
+
+# ─── STAGE 1: Test ──────────────────────────────────────────────────────
+test:
+  stage: test
+  # 📌 MATERIAŁ: services w GitLab — odpowiednik services w GitHub Actions
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+  variables:
+    POSTGRES_DB: refapp_test
+    POSTGRES_USER: refuser
+    POSTGRES_PASSWORD: refpass
+    POSTGRES_HOST_AUTH_METHOD: trust
+    DATABASE_URL: postgres://refuser:refpass@postgres:5432/refapp_test
+    NODE_ENV: test
+  before_script:
+    - cd backend
+    - npm ci --cache ../.npm --prefer-offline
+  script:
+    - npm test
+  # 📌 MATERIAŁ: GitLab pokazuje czas każdego joba w widoku pipeline
+  after_script:
+    - echo "Test stage completed at $(date -u)"
+
+# ─── STAGE 2: Build ─────────────────────────────────────────────────────
+build:
+  stage: build
+  before_script:
+    - cd backend
+    - npm ci --only=production --cache ../.npm --prefer-offline
+  script:
+    - echo "📦 Verifying build..."
+    - node -e "console.log('Node version:', process.version)"
+    - node -e "require('./src/index.js')" &
+    - sleep 2
+    - kill %1 2>/dev/null || true
+    - echo "✅ Build verified"
+  # 📌 MATERIAŁ: artifacts w GitLab — inny mechanizm niż GitHub
+  # GitHub: actions/upload-artifact
+  # GitLab: artifacts: paths — natywna funkcja
+  artifacts:
+    name: "backend-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - backend/src/
+      - backend/package.json
+      - backend/package-lock.json
+    exclude:
+      - backend/node_modules/**
+    expire_in: 7 days
+    when: on_success
+
+# ─── STAGE 3: Deploy ────────────────────────────────────────────────────
+deploy:
+  stage: deploy
+  image: alpine:3.19
+  # 📌 MATERIAŁ: only/rules — GitLab odpowiednik GitHub's if: github.ref == 'refs/heads/main'
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"'
+  before_script:
+    - apk add --no-cache curl python3
+  script:
+    - echo "🚀 Triggering Render deployment..."
+    - |
+      RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$RENDER_DEPLOY_HOOK_URL")
+      HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+      echo "Render response: $HTTP_CODE"
+      if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+        echo "❌ Deploy trigger failed: HTTP $HTTP_CODE"
+        exit 1
+      fi
+    - echo "⏳ Waiting for deployment..."
+    - |
+      MAX_ATTEMPTS=30
+      ATTEMPT=0
+      until [ $ATTEMPT -ge $MAX_ATTEMPTS ]; do
+        ATTEMPT=$((ATTEMPT + 1))
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$RENDER_SERVICE_URL/health" || echo "000")
+        echo "Attempt $ATTEMPT/$MAX_ATTEMPTS — HTTP $STATUS"
+        if [ "$STATUS" = "200" ]; then
+          echo "✅ Deployment live!"
+          break
+        fi
+        if [ $ATTEMPT -ge $MAX_ATTEMPTS ]; then
+          echo "❌ Timeout"
+          exit 1
+        fi
+        sleep 10
+      done
+    - echo "🔍 Smoke test..."
+    - |
+      HEALTH=$(curl -s "$RENDER_SERVICE_URL/health")
+      echo "Health response: $HEALTH"
+      echo "$HEALTH" | python3 -c "
+      import sys, json
+      d = json.load(sys.stdin)
+      assert d['status'] == 'healthy', f'Expected healthy, got {d[\"status\"]}'
+      print('✅ Smoke test passed')
+      "
+  # 📌 MATERIAŁ: GitLab environment tracking — brak natywnego odpowiednika w GitHub Actions
+  environment:
+    name: production
+    url: $RENDER_SERVICE_URL
+
+# ─── STAGE 4: Pages ─────────────────────────────────────────────────────
+# 📌 MATERIAŁ: GitLab Pages MUSI nazywać się "pages" i zapisywać do public/
+# To jest twarda konwencja GitLab — inaczej niż GitHub gdzie jest actions/deploy-pages
+pages:
+  stage: pages
+  image: alpine:3.19
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  before_script:
+    - apk add --no-cache sed
+  script:
+    - mkdir -p public
+    - cp frontend/src/index.html public/index.html
+    # Inject pipeline metadata — identyczny pattern co GitHub, inne zmienne
+    # 📌 MATERIAŁ: porównaj nazwy zmiennych GitLab vs GitHub
+    # GitHub: ${{ github.sha }}      GitLab: $CI_COMMIT_SHORT_SHA
+    # GitHub: ${{ github.actor }}    GitLab: $CI_COMMIT_AUTHOR
+    # GitHub: ${{ github.ref_name }} GitLab: $CI_COMMIT_BRANCH
+    - sed -i "s|window.PIPELINE_PLATFORM|'GitLab CI'|g" public/index.html
+    - sed -i "s|window.DEPLOY_TIME|'$(date -u +%Y-%m-%dT%H:%M:%SZ)'|g" public/index.html
+    - sed -i "s|window.BUILD_ID|'$CI_COMMIT_SHORT_SHA'|g" public/index.html
+    - sed -i "s|window.API_URL|'$RENDER_SERVICE_URL'|g" public/index.html
+    - echo "✅ Frontend ready for GitLab Pages"
+  artifacts:
+    # 📌 MATERIAŁ: GitLab Pages wymaga tej konkretnej struktury artifacts
+    paths:
+      - public
+  environment:
+    name: gitlab-pages
+    url: https://$CI_PROJECT_NAMESPACE.gitlab.io/$CI_PROJECT_NAME
