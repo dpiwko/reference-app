@@ -24,6 +24,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 📌 MATERIAŁ: wstrzykiwanie metadanych pipeline'u do frontendu
       - name: Inject pipeline metadata
         run: |
           sed -i "s|window.API_URL = .*|window.API_URL = '${{ secrets.RENDER_SERVICE_URL }}';|g" frontend/src/index.html
